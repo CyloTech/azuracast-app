@@ -1,27 +1,43 @@
 # Releasing azuracast 0.23.4-1
 
 The image is the deployed 0.23.4 digest with PHP's own files copied in from
-the official `php:8.5.12-fpm-trixie` image (see the Dockerfile).
+`repo.cylo.net/php-artifacts:docker-library-php-8.5.12-fpm-trixie` (see `Dockerfile`).
 
-## 1. Is the patched PHP available?
+## 1. The patched PHP
 
-Docker Hub must have `php:8.5.12-fpm-trixie`. Either of these answers it:
+On 21 October 2026 Docker Hub's `php:8.5.12-fpm-trixie` tag was an empty image index
+(no linux/amd64 image), so PHP 8.5.12 was built here instead, from the
+unmodified docker-library/php `8.5/trixie/fpm` recipe with `FROM` pinned by digest:
 
-    docker buildx imagetools inspect docker.io/library/php:8.5.12-fpm-trixie   # on the builder
-    release/build-on-builder.sh pin 8.5.12-fpm-trixie                           # fails with "not available on Docker Hub yet"
+1. `release/php-artifact/node-build.sh` built `release/php-artifact/docker-library/`
+   on a low-load Cylo node (legacy builder, `--cpu-shares 256`), saved the
+   image as a gzip'd docker archive and recorded its sha256.
+2. The archive was copied node -> builder with `scp -3` and its sha256 was
+   checked again on the builder before `docker load`.
+3. `release/php-artifact/make-artifact.sh` turned the loaded image into a
+   FROM-scratch artifact (the whole /usr/local tree plus /php-artifact/
+   README, SHA256SUMS, SYMLINKS, Dockerfile, runtime packages, php -v/-m).
+4. `release/php-artifact/verify-artifact.sh` gated it (PHP version, libraries,
+   php-fpm -t, multipart upload, artifact contents identical to the image,
+   tag absent) and it was pushed, then pinned by digest in `Dockerfile`.
 
-## 2-5. Pin, build, gate, push
+`release/php-artifact/artifact.env` records the provenance (recipe commit,
+base digest, PHP tarball sha256 and signing key, node, image ID, archive
+sha256).
+
+## 2. Build, gate, push
 
 From a clean checkout of branch `php-multipart-fix` on the Mac:
 
     git pull --ff-only origin php-multipart-fix
-    release/build-on-builder.sh pin 8.5.12-fpm-trixie
-    git commit -am "Pin php:8.5.12-fpm-trixie by digest"
-    git push origin php-multipart-fix
-    release/build-on-builder.sh release
+    CYLO_BUILD_TMP=<scratch dir> release/build-on-builder.sh release
 
-`release` builds `repo.cylo.net/azuracast:0.23.4-1` on the builder from the
-pushed commit, runs `release/verify-image.sh` and pushes only if the gate
-passes, then prints the pushed digest.
-
-A trial (never pushed) is `release/build-on-builder.sh trial 8.5.11-fpm-trixie`.
+`release` builds `repo.cylo.net/azuracast:0.23.4-1` on builder1 from the pushed
+commit, runs `release/verify-image.sh` and pushes only if the gate passes,
+then prints the pushed digest. The gate checks the deployed layers and image
+config are unchanged apart from PHP_VERSION and the PHP files, the PHP files
+match the pinned artifact, php and php-fpm report 8.5.12, no library is
+missing, `php -m` and `php-fpm -m` equal the deployed image, `php-fpm -t`
+and `nginx -t` pass, a PHP page served through the image's nginx and
+php-fpm parses a multipart upload, PHP's built-in server parses one too, and
+the tag is definitively absent from the registry (MANIFEST_UNKNOWN).
